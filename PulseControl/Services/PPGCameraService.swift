@@ -10,6 +10,8 @@ import AVFoundation
 import QuartzCore
 
 final class PPGCameraService: NSObject {
+    var onMeasurementFinished: (() -> Void)?
+
 
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "camera.queue")
@@ -131,7 +133,9 @@ final class PPGCameraService: NSObject {
             self.unlockCameraAfterMeasurement()
 
             print("Measurement finished after 30 seconds")
+            self.onMeasurementFinished?()
         }
+
     }
 
     
@@ -259,5 +263,8 @@ extension PPGCameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
         // Send to analyzer
         analyzer.processSample(redAvg, timestamp: now)
     }
+    
 }
+
+
 
