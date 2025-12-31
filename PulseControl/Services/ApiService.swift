@@ -56,7 +56,7 @@ enum ApiServiceError: Error, LocalizedError {
 class ApiService {
 
 
-    private let baseURL = "http://192.168.0.12:3000"
+    private let baseURL = "http://192.168.50.168:3000"
 
 
     func analyzePulse(bpm: Int) async throws -> PulseAnalyzeResponse {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation  // ← Neu hinzugefügt
 
 struct BreathingExerciseView: View {
 
@@ -9,6 +10,10 @@ struct BreathingExerciseView: View {
     @State private var phaseRemainingTime: Int = 0
     @State private var timer: Timer?
     @State private var finished = false
+    
+    // Neu: Musik-Player
+    @State private var backgroundPlayer: AVAudioPlayer?
+    @State private var isMusicEnabled = true  // Standard: an
 
     init(exercise: BreathingExerciseModel) {
         self.exercise = exercise
@@ -33,11 +38,9 @@ struct BreathingExerciseView: View {
 
             if !finished {
 
-                // Gentle guidance text
                 Text("Follow the breathing rhythm below")
                     .foregroundColor(.secondary)
 
-                // Current phase
                 Text(currentPhase.title)
                     .font(.title)
                     .fontWeight(.bold)
@@ -52,7 +55,6 @@ struct BreathingExerciseView: View {
 
             } else {
 
-                // ✅ Finished state
                 Text("Great job 🌿")
                     .font(.title)
                     .fontWeight(.bold)
@@ -69,47 +71,53 @@ struct BreathingExerciseView: View {
                 } label: {
                     PrimaryButton(title: "Measure Pulse Again")
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal)
             }
 
             Spacer()
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    isMusicEnabled.toggle()
+                    if isMusicEnabled {
+                        startBackgroundMusic()
+                    } else {
+                        stopBackgroundMusic()
+                    }
+                } label: {
+                    Image(systemName: isMusicEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                        .font(.title3)
+                }
+            }
+        }
         .onAppear {
-            startExercise()
+            setupPhase(.inhale)
+            startTimer()
+            startBackgroundMusic()  // ← Musik startet automatisch
         }
         .onDisappear {
             stopTimer()
+            stopBackgroundMusic()   // ← Musik stoppt beim Verlassen
+            finished = false
         }
     }
 
-    // MARK: - Timer logic
+    // Dein bestehender Timer-Code (unverändert)
+    private func startTimer() {
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            totalRemainingTime -= 1
+            phaseRemainingTime -= 1
 
-    private func startExercise() {
-        setupPhase(.inhale)
+            if phaseRemainingTime <= 0 {
+                moveToNextPhase()
+            }
 
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            tick()
+            if totalRemainingTime <= 0 {
+                finishExercise()
+            }
         }
-    }
-
-    private func tick() {
-        guard totalRemainingTime > 0 else {
-            finishExercise()
-            return
-        }
-
-        totalRemainingTime -= 1
-        phaseRemainingTime -= 1
-
-        if phaseRemainingTime <= 0 {
-            moveToNextPhase()
-        }
-    }
-
-    private func finishExercise() {
-        stopTimer()
-        finished = true
     }
 
     private func stopTimer() {
@@ -117,67 +125,79 @@ struct BreathingExerciseView: View {
         timer = nil
     }
 
-    // MARK: - Phase handling
+    private func finishExercise() {
+        stopTimer()
+        finished = true
+    }
 
     private func setupPhase(_ phase: Phase) {
         currentPhase = phase
-
         switch phase {
-        case .inhale:
-            phaseRemainingTime = exercise.inhale
-
-        case .hold:
-            phaseRemainingTime = exercise.hold ?? 0
-
-        case .exhale:
-            phaseRemainingTime = exercise.exhale
-
-        case .holdAfterExhale:
-            phaseRemainingTime = exercise.holdAfterExhale ?? 0
+        case .inhale: phaseRemainingTime = exercise.inhale
+        case .hold: phaseRemainingTime = exercise.hold ?? 0
+        case .exhale: phaseRemainingTime = exercise.exhale
+        case .holdAfterExhale: phaseRemainingTime = exercise.holdAfterExhale ?? 0
         }
     }
 
     private func moveToNextPhase() {
         switch currentPhase {
         case .inhale:
-            if exercise.hold != nil {
-                setupPhase(.hold)
-            } else {
-                setupPhase(.exhale)
-            }
-
+            if exercise.hold != nil { setupPhase(.hold) } else { setupPhase(.exhale) }
         case .hold:
             setupPhase(.exhale)
-
         case .exhale:
-            if exercise.holdAfterExhale != nil {
-                setupPhase(.holdAfterExhale)
-            } else {
-                setupPhase(.inhale)
-            }
-
+            if exercise.holdAfterExhale != nil { setupPhase(.holdAfterExhale) } else { setupPhase(.inhale) }
         case .holdAfterExhale:
             setupPhase(.inhale)
         }
     }
+
+    // Neu: Musik-Funktionen
+    private func startBackgroundMusic() {
+        guard isMusicEnabled else { return }
+        
+        // Dateiname je nach Übung wählen
+        var fileName: String
+        switch exercise.title {
+        case "Box Breathing":
+            fileName = "box_breathing_bells"      // deine MP3 für Glocken
+        case "4-7-8 Breathing":
+            fileName = "four_seven_eight_ocean"   // deine MP3 für Ozeanwellen
+        default: // Extended Exhale
+            fileName = "extended_exhale_rain"     // deine MP3 für Regen
+        }
+        
+        guard let url = Bundle.main.url(forResource: fileName, withExtension: "mp3") else {
+            print("Musik-Datei nicht gefunden: \(fileName).mp3")
+            return
+        }
+        
+        do {
+            backgroundPlayer = try AVAudioPlayer(contentsOf: url)
+            backgroundPlayer?.numberOfLoops = -1   // Endlosschleife
+            backgroundPlayer?.volume = 0.4         // Leise – passe an (0.3–0.5)
+            backgroundPlayer?.play()
+        } catch {
+            print("Fehler beim Abspielen: \(error)")
+        }
+    }
+    
+    private func stopBackgroundMusic() {
+        backgroundPlayer?.stop()
+        backgroundPlayer = nil
+    }
 }
 
-// MARK: - Phase enum
-
+// Phase-Enum und Preview bleiben unverändert
 enum Phase {
-    case inhale
-    case hold
-    case exhale
-    case holdAfterExhale
+    case inhale, hold, exhale, holdAfterExhale
 
     var title: String {
         switch self {
-        case .inhale:
-            return "Inhale slowly"
-        case .hold, .holdAfterExhale:
-            return "Hold"
-        case .exhale:
-            return "Exhale slowly"
+        case .inhale: return "Inhale slowly"
+        case .hold, .holdAfterExhale: return "Hold"
+        case .exhale: return "Exhale slowly"
         }
     }
 }

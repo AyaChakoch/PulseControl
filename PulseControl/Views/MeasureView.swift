@@ -77,7 +77,7 @@ struct MeasureView: View {
         // Navigation to result
         .navigationDestination(isPresented: $navigateToResult) {
             if let bpm = viewModel.bpm {
-                ResultView(bpm: bpm)
+                ResultView(bpm: bpm, viewModel: viewModel)
             }
         }
         
