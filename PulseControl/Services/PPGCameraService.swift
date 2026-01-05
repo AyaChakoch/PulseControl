@@ -245,26 +245,23 @@ extension PPGCameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
         let y0 = max(0, centerY - roiHalfSize)
         let y1 = min(height - 1, centerY + roiHalfSize)
 
-        var sumRed: Double = 0
+        var sumGreen: Double = 0
         var count: Double = 0
 
         for y in y0...y1 {
             let rowBase = y * bytesPerRow
             for x in x0...x1 {
                 let offset = rowBase + x * 4
-                let red = Double(buffer[offset + 2]) // BGRA → R
-                sumRed += red
+                let green = Double(buffer[offset + 1]) // BGRA → R
+                sumGreen += green
                 count += 1
             }
         }
 
-        let redAvg = (count > 0) ? (sumRed / count) : 0
+        let greenAvg = (count > 0) ? (sumGreen / count) : 0
 
         // Send to analyzer
-        analyzer.processSample(redAvg, timestamp: now)
+        analyzer.processSample(greenAvg, timestamp: now)
     }
     
 }
-
-
-

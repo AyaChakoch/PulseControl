@@ -146,4 +146,3 @@ struct MeasureView: View {
         MeasureView()
     }
 }
-
