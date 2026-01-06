@@ -10,60 +10,63 @@ import QuartzCore
 
 final class PPGAnalyzer {
 
-    // ===== callback =====
+    // Called when we have a stable BPM estimate to show in the UI
     var onBPMUpdate: ((Int) -> Void)?
 
-    // ===== Debug =====
+    // Debug prints to help tune thresholds and verify detection
     private let debug = true
 
-    // ===== Timing =====
+    // Measurement timing and stability gating
     private var measurementStartTime: TimeInterval?
-    private let warmUpTime: TimeInterval = 5.0
-    private let stabilizationTime: TimeInterval = 5.0
-    private let minPeaksForStability = 2
+    private let warmUpTime: TimeInterval = 3.0            // ignore first seconds while signal settles
+    private let stabilizationTime: TimeInterval = 5.0     // require some time before trusting BPM
+    private let minPeaksForStability = 3                  // minimum number of peaks before updating UI
 
-    // ===== Two EWMAs (teacher's method) =====
-    private let fastAlpha: Double = 0.5   // fast EWMA (α)
-    private let slowBeta: Double = 0.05   // slow EWMA (β)
-
+    // Unused (kept for now, could be removed later if not needed)
+    private let fastAlpha: Double = 0.5
+    private let slowBeta: Double = 0.05
     private var fastEWMA: Double?
     private var slowEWMA: Double?
-    
     private let crossHysteresis: Double = 0.05
-    
     private var wasAbove = false
-
-
     private var prevFast: Double?
     private var prevSlow: Double?
 
-    // ===== Peak detection =====
-    private var peakTimestamps: [TimeInterval] = []
-    private let minPeakInterval: TimeInterval = 0.45
+    // Peak detection state
+    private var peakTimestamps: [TimeInterval] = []       // unused (kept for now)
+    private let minPeakInterval: TimeInterval = 0.55      // reject peaks that are too close (noise/double count)
     private var isStable = false
+    private var acPeakTimestamps: [TimeInterval] = []     // timestamps for detected AC peaks
 
-    // ===== BPM smoothing =====
+    // Baseline tracking (DC removal) to get AC signal
+    private var baseline: Double = 0
+    private let baselineAlpha: Double = 0.02              // baseline smoothing speed
+    private var lastAC: Double = 0                        // previous AC in the 3-point window
+    private var lastPeakTime: TimeInterval = 0
+    private var acThreshold: Double = 0.2                 // minimum AC amplitude to count as a real peak
+    private var prevAC: Double = 0                        // previous-previous AC in the 3-point window
+    private var lastACTime: TimeInterval = 0              // timestamp corresponding to lastAC
+
+    // BPM smoothing (reduce jitter in UI)
     private var bpmValues: [Double] = []
     private let bpmWindowSize = 5
 
-    // (optional) keep raw for debug prints
+    // Optional: store raw samples for debugging prints
     private var sValues: [Double] = []
 
     func startMeasurement(startTime: TimeInterval) {
         measurementStartTime = startTime
 
-        // reset state
-        fastEWMA = nil
-        slowEWMA = nil
-        prevFast = nil
-        prevSlow = nil
-        
-
-        peakTimestamps.removeAll()
+        // Reset all measurement state
+        acPeakTimestamps.removeAll()
         bpmValues.removeAll()
         sValues.removeAll()
-        
-        wasAbove = false
+
+        baseline = 0
+        prevAC = 0
+        lastAC = 0
+        lastACTime = 0
+        lastPeakTime = 0
         isStable = false
     }
 
@@ -71,112 +74,97 @@ final class PPGAnalyzer {
         measurementStartTime = nil
     }
 
-    /// S(n) = redAvg (ROI mean). Call this for every frame
+    // S(n) is the mean red value from the ROI (one value per frame)
     func processSample(_ s: Double, timestamp now: TimeInterval) {
         guard let start = measurementStartTime else { return }
 
+        // Keep raw sample history (debug only)
         sValues.append(s)
 
-        // --- 1) Update two EWMAs ---
-        if fastEWMA == nil || slowEWMA == nil {
-            // initialize first sample
-            fastEWMA = s
-            slowEWMA = s
-            prevFast = fastEWMA
-            prevSlow = slowEWMA
+        /// 1) DC removal: track a slow baseline and subtract it -> AC component
+        if baseline == 0 { baseline = s } // initialize baseline on first sample
+        baseline = (1.0 - baselineAlpha) * baseline + baselineAlpha * s
+        let ac = s - baseline
+
+        /// 2) Peak detection on AC using a 3-point local maximum
+        // We need at least 2 stored points (prevAC + lastAC) before we can detect a local max
+        if lastACTime == 0 {
+            prevAC = ac
+            lastAC = ac
+            lastACTime = now
             return
         }
 
-        // store previous values for crossing check
-        let pf = fastEWMA!
-        let ps = slowEWMA!
-        prevFast = pf
-        prevSlow = ps
-
-        // EWMA formulas:
-        // F_fast(n) = α*F_fast(n-1) + (1-α)*S(n)
-        // F_slow(n) = β*F_slow(n-1) + (1-β)*S(n)
-        fastEWMA = fastAlpha * s + (1.0 - fastAlpha) * pf
-        slowEWMA = slowBeta  * s + (1.0 - slowBeta)  * ps
-
-        let f = fastEWMA!
-        let sl = slowEWMA!
-
-        // --- 2) Warm-up (ignore peaks early) ---
         let elapsed = now - start
         let allowPeaks = elapsed >= warmUpTime
 
-        if allowPeaks, let prevF = prevFast, let prevS = prevSlow {
-            // --- 3) Peak when FAST crosses from above SLOW to below SLOW ---
-            
-            let prevDiff = prevF - prevS
-            let diff = f - sl
+        // Count a peak if lastAC is greater than both neighbors and above threshold
+        let isPeak = (lastAC > prevAC) && (lastAC > ac) && (lastAC > acThreshold)
 
-            if debug && sValues.count % 30 == 0 {
-                print("diff(fast-slow):", diff)
+        // Helpful debug print to see if threshold is too high/low
+        if debug && allowPeaks && sValues.count % 30 == 0 {
+            print("allowPeaks:", allowPeaks, "prevAC:", prevAC, "lastAC:", lastAC, "ac:", ac, "thr:", acThreshold)
+        }
+
+        // Enforce minimum time between peaks to avoid double counting
+        if allowPeaks && isPeak && (lastACTime - lastPeakTime) >= minPeakInterval {
+
+            // Save the timestamp for the peak (we use lastACTime for lastAC)
+            acPeakTimestamps.append(lastACTime)
+            lastPeakTime = lastACTime
+
+            if debug {
+                let dt = acPeakTimestamps.count >= 2
+                ? acPeakTimestamps.last! - acPeakTimestamps[acPeakTimestamps.count - 2]
+                : -1
+                print("PEAK(AC) dt:", dt, "peakAC:", lastAC, "acNow:", ac)
             }
 
-            // 1) latch: minns att vi varit tydligt över slow
-            if diff > crossHysteresis {
-                wasAbove = true
+            /// 3) Only allow UI updates after enough time + enough peaks
+            let elapsed = now - start
+            if !isStable,
+               elapsed >= stabilizationTime,
+               acPeakTimestamps.count >= minPeaksForStability {
+                isStable = true
             }
 
-            // 2) peak när vi sen går tydligt under slow
-            let crossedDown = wasAbove && diff < -crossHysteresis
-
-            if crossedDown {
-                wasAbove = false
-                // enforce min interval between peaks
-                var validPeak = true
-                if let last = peakTimestamps.last, now - last < minPeakInterval {
-                    validPeak = false
-                }
-                if validPeak {
-                    peakTimestamps.append(now)
-
-                    if debug, peakTimestamps.count >= 2 {
-                        let dt = peakTimestamps.last! - peakTimestamps[peakTimestamps.count - 2]
-                        print("PEAK(cross) dt:", dt, "fast:", f, "slow:", sl)
-                    }
-
-                    // --- 4) Stability gate (same idea as before) ---
-                    if !isStable,
-                       elapsed >= stabilizationTime,
-                       peakTimestamps.count >= minPeaksForStability {
-                        isStable = true
-                    }
-
-                    if isStable {
-                        calculateBPM()
-                    }
-                }
+            /// 4) Update BPM if stable
+            if isStable {
+                calculateBPM()
             }
         }
 
-        // Debug prints
+        // Shift the 3-point window forward
+        prevAC = lastAC
+        lastAC = ac
+        lastACTime = now
+
+        // Debug print of raw sample and AC/baseline occasionally
         if debug && sValues.count % 30 == 0 {
-            print("S(n):", s, "fast:", fastEWMA ?? -1, "slow:", slowEWMA ?? -1)
+            print("S(n):", s)
+            print("AC:", ac, "baseline:", baseline)
         }
     }
 
-    // ===== BPM calculation (unchanged) =====
     private func calculateBPM() {
-        guard peakTimestamps.count >= 2 else { return }
+        guard acPeakTimestamps.count >= 2 else { return }
 
-        let intervals = zip(peakTimestamps.dropFirst(), peakTimestamps)
+        // Convert peak timestamps -> intervals between beats
+        let intervals = zip(acPeakTimestamps.dropFirst(), acPeakTimestamps)
             .map { $0 - $1 }
-            .filter { $0 >= 0.45 && $0 <= 1.5 }
+            .filter { $0 >= 0.55 && $0 <= 1.5 }
 
         guard intervals.count >= 2 else { return }
 
+        // Use a small recent window and take the median for robustness
         let lastN = Array(intervals.suffix(5)).sorted()
-        
-        //guard intervalsAreStable(lastN) else {
-         //   if debug { print("Intervals not stable, skipping UI update:", lastN) }
-         //   return
-       // }
 
-        
+        // Skip UI updates if intervals vary too much (likely noise/missed peaks)
+        guard intervalsAreStable(lastN) else {
+            if debug { print("Intervals not stable, skipping UI update:", lastN) }
+            return
+        }
+
         let medianInterval = lastN[lastN.count / 2]
 
         if debug {
@@ -184,8 +172,10 @@ final class PPGAnalyzer {
             print("Intervals(lastN):", lastN, "avg:", avgInterval, "median:", medianInterval)
         }
 
+        // Convert interval (seconds/beat) -> BPM
         let bpm = 60.0 / medianInterval
 
+        // Smooth BPM to reduce flicker in UI
         bpmValues.append(bpm)
         if bpmValues.count > bpmWindowSize {
             bpmValues.removeFirst()
@@ -201,21 +191,17 @@ final class PPGAnalyzer {
         onBPMUpdate?(smoothInt)
         print("UI UPDATE BPM:", smoothInt)
     }
-    
+
     private func intervalsAreStable(_ xs: [Double]) -> Bool {
         guard xs.count >= 3 else { return false }
+
         let minV = xs.min()!
         let maxV = xs.max()!
         let med = xs.sorted()[xs.count / 2]
         if med <= 0 { return false }
 
-        // Tillåt max ~15% variation
-        return (maxV - minV) / med < 0.15
+        // Allow up to ~30% spread around the median
+        return (maxV - minV) / med < 0.30
     }
-
-
-    
-    
-    
 }
 
